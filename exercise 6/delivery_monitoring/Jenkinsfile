@@ -1,0 +1,65 @@
+
+pipeline {
+    agent any
+
+    stages {
+        stage('Pre-check Docker') {
+            steps {
+                script {
+                    def dockerVersion = sh(
+                        script: 'export DOCKER_HOST=tcp://jenkins-dind:2375; /var/jenkins_home/docker --version',
+                        returnStdout: true
+                    ).trim()
+
+                    def dockerInfo = sh(
+                        script: 'export DOCKER_HOST=tcp://jenkins-dind:2375; /var/jenkins_home/docker info',
+                        returnStatus: true
+                    )
+
+                    if (!dockerVersion || dockerInfo != 0) {
+                        error 'Docker CLI or daemon is unavailable.'
+                    }
+
+                    echo "Docker is available: ${dockerVersion}"
+                }
+            }
+        }
+
+        stage('Setup Workspace') {
+            steps {
+                sh '''
+                    cp /var/jenkins_home/delivery_metrics.py .
+                    cp /var/jenkins_home/prometheus.yml .
+                    cp /var/jenkins_home/alert_rules.yml .
+                '''
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh 'export DOCKER_HOST=tcp://jenkins-dind:2375; /var/jenkins_home/docker build -t delivery_metrics .'
+            }
+        }
+
+        stage('Run Application') {
+            steps {
+                sh 'export DOCKER_HOST=tcp://jenkins-dind:2375; /var/jenkins_home/docker run -d -p 8000:8000 --name delivery_metrics delivery_metrics'
+            }
+        }
+
+        stage('Run Prometheus & Grafana') {
+            steps {
+                sh '''
+                    export DOCKER_HOST=tcp://jenkins-dind:2375
+
+                    /var/jenkins_home/docker run -d --name prometheus -p 9090:9090 \
+                      -v "$WORKSPACE/prometheus.yml:/etc/prometheus/prometheus.yml" \
+                      -v "$WORKSPACE/alert_rules.yml:/etc/prometheus/alert_rules.yml" \
+                      prom/prometheus
+
+                    /var/jenkins_home/docker run -d --name grafana -p 3000:3000 grafana/grafana
+                '''
+            }
+        }
+    }
+}
